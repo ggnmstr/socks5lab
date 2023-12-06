@@ -1,4 +1,5 @@
 #include "session.hpp"
+#include "socks.hpp"
 #include <boost/asio/write.hpp>
 #include <boost/system/detail/error_code.hpp>
 #include <cstdint>
@@ -22,16 +23,16 @@ void Session::read_socks5_handshake() {
           slog("SOCKS5 handshake request error!");
           return;
         }
-        if (in_buf[0] != 0x05) {
+        if (in_buf[0] != SOCKS5_VERSION) {
           slog("Handshake read: incompitable socks version!");
           return;
         }
         uint8_t num_methods = in_buf[1];
 
-        in_buf[1] = 0xFF;
+        in_buf[1] = SOCKS5_NO_ACCEPTABLE_METHODS;
         for (int i = 0; i < num_methods; i++) {
-          if (in_buf[2 + i] == 0x00) {
-            in_buf[1] = 0x00;
+          if (in_buf[2 + i] == SOCKS5_NO_AUTH_REQUIRED) {
+            in_buf[1] = SOCKS5_NO_AUTH_REQUIRED;
           }
         }
         write_socks5_handshake();
@@ -49,7 +50,7 @@ void Session::write_socks5_handshake() {
           slog("Write socks5 handshake error");
           return;
         }
-        if (in_buf[1] == 0xFF) {
+        if (in_buf[1] == SOCKS5_NO_ACCEPTABLE_METHODS) {
           slog("Only no auth supported, closing connection");
           return;
         }
@@ -67,14 +68,15 @@ void Session::read_socks5_request() {
           slog("read_socks5_request error: " << ec.message());
           return;
         }
-        if (in_buf[0] != 0x05 || in_buf[1] != 0x01) {
+        if (in_buf[0] != SOCKS5_VERSION ||
+            in_buf[1] != SOCKS5_ESTABLISH_TCP_IP_CONNECTION) {
           slog("Invalid request, closing");
           return;
         }
         uint8_t addr_type = in_buf[3];
         uint8_t host_length;
         switch (addr_type) {
-        case 0x01:
+        case SOCKS5_IPV4:
           // ipv4 addres
           if (length != 10) {
             slog("SOCKS5 request length is invalid. Closing session.");
@@ -85,7 +87,7 @@ void Session::read_socks5_request() {
                   .to_string();
           remote_port = std::to_string(ntohs(*((uint16_t *)&in_buf[8])));
           break;
-        case 0x03:
+        case SOCKS5_DOMAIN_NAME:
           // domain name
           host_length = in_buf[4];
           if (length != (size_t)(5 + host_length + 2)) {
@@ -134,11 +136,11 @@ void Session::do_connect(tcp::resolver::iterator &it) {
 
 void Session::write_socks5_response() {
   auto self(shared_from_this());
-  in_buf[0] = 0x05;
-  in_buf[1] = 0x00;
-  in_buf[2] = 0x00;
+  in_buf[0] = SOCKS5_VERSION;
+  in_buf[1] = SOCKS5_ZERO_RESERVED;
+  in_buf[2] = SOCKS5_ZERO_RESERVED;
 
-  in_buf[3] = 0x01;
+  in_buf[3] = SOCKS5_IPV4;
   uint32_t realRemoteIP =
       out_socket.remote_endpoint().address().to_v4().to_ulong();
   uint16_t realRemoteport = htons(out_socket.remote_endpoint().port());
@@ -195,8 +197,8 @@ void Session::do_write(int direction, std::size_t length) {
 
   auto self(shared_from_this());
 
-  switch (direction) {
-  case 1:
+  if (direction == 1) {
+
     boost::asio::async_write(
         out_socket, boost::asio::buffer(in_buf, length),
         [this, self, direction](boost::system::error_code ec,
@@ -210,8 +212,7 @@ void Session::do_write(int direction, std::size_t length) {
             out_socket.close();
           }
         });
-    break;
-  case 2:
+  } else if (direction == 2) {
     boost::asio::async_write(
         in_socket, boost::asio::buffer(out_buf, length),
         [this, self, direction](boost::system::error_code ec,
@@ -225,6 +226,5 @@ void Session::do_write(int direction, std::size_t length) {
             out_socket.close();
           }
         });
-    break;
   }
 }
